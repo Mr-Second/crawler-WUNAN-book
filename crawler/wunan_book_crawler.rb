@@ -2,7 +2,7 @@ require 'crawler_rocks'
 require 'pry'
 require 'json'
 require 'iconv'
-require 'isbn'
+require 'book_toolkit'
 
 require 'thread'
 require 'thwait'
@@ -14,10 +14,13 @@ class WunanBookCrawler
     "作者" => :author,
     "出版社" => :publisher,
     "出版日" => :date,
-    "定價" => :price,
+    "定價" => :original_price,
   }
 
-  def initialize
+  def initialize update_progress: nil, after_each: nil
+    @update_progress_proc = update_progress
+    @after_each_proc = after_each
+
     @index_url = "http://www.wunanbooks.com.tw"
   end
 
@@ -83,10 +86,12 @@ class WunanBookCrawler
       external_image_url = URI.join(@index_url, tr.xpath('td[1]/table/tr/td/a/img/@src').to_s).to_s
 
       isbn = url.match(/(?<=product\/).+/).to_s
-
+      invalid_isbn = nil
       begin
-        isbn = isbn_to_13(isbn)
+        isbn = BookToolkit.to_isbn13(isbn)
       rescue Exception => e
+        invalid_isbn = isbn
+        isbn = nil
       end
 
       data_rows = tr.xpath('td[2]/table/tr')
@@ -95,8 +100,10 @@ class WunanBookCrawler
       @books[isbn] = {
         name: name,
         isbn: isbn,
+        invalid_isbn: invalid_isbn,
         external_image_url: external_image_url,
-        url: url
+        url: url,
+        known_supplier: 'wunan'
       }
 
       data_rows[1..-1].map{|r| r.text.strip}.each {|attr_data|
@@ -104,42 +111,12 @@ class WunanBookCrawler
         @books[isbn][ATTR_HASH[key]] = attr_data.rpartition('：')[-1] if ATTR_HASH[key]
       }
 
-      @books[isbn][:price] = @books[isbn][:price].gsub(/[^\d]/, '').to_i
-    end
+      @books[isbn][:original_price] = @books[isbn][:original_price].gsub(/[^\d]/, '').to_i
 
-  end
-
-  def isbn_to_13 isbn
-    case isbn.length
-    when 13
-      return ISBN.thirteen isbn
-    when 10
-      return ISBN.thirteen isbn
-    when 12
-      return "#{isbn}#{isbn_checksum(isbn)}"
-    when 9
-      return ISBN.thirteen("#{isbn}#{isbn_checksum(isbn)}")
-    end
-  end
-
-  def isbn_checksum(isbn)
-    isbn.gsub!(/[^(\d|X)]/, '')
-    c = 0
-    if isbn.length <= 10
-      10.downto(2) {|i| c += isbn[10-i].to_i * i}
-      c %= 11
-      c = 11 - c
-      c ='X' if c == 10
-      return c
-    elsif isbn.length <= 13
-      (1..11).step(2) {|i| c += isbn[i].to_i}
-      c *= 3
-      (0..11).step(2) {|i| c += isbn[i].to_i}
-      c = (220-c) % 10
-      return c
+      @after_each_proc.call(book: @books[isbn]) if @after_each_proc
     end
   end
 end
 
-cc = WunanBookCrawler.new
-File.write('wunan_books.json', JSON.pretty_generate(cc.books))
+# cc = WunanBookCrawler.new
+# File.write('wunan_books.json', JSON.pretty_generate(cc.books))
